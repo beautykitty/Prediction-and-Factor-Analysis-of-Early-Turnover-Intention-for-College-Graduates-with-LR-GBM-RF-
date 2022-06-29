@@ -1,0 +1,601 @@
+---
+title: "ADSA_Rmd"
+author: "Seunghyun Son"
+date: "12/12/2021"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+require("knitr")
+opts_chunk$set(echo = TRUE)
+opts_knit$set(root.dir = "/Users/seunghyunson/Downloads/Raw Data_고자분/2018GOMS1") #change your wd with getwd()
+    
+library(tidyverse) 
+library(readxl)
+```
+
+
+#### Load Data
+```{r}
+data19 <- read_excel("GP18__2019.xlsx")
+```
+
+
+#### Select Variables
+```{r}
+## Select Variables
+data <- data19 %>% 
+  select(G181SEX, G181P001, G181AGE, G181MAJORCAT, G181P036, G181F073, G181F074,
+         G181H001, G181A141, G181A144, G181A142, G181A138, G181A139, G181A136, G181A143, 
+         G181A020, G181A011, G181A140, G181A125, G181A126, G181A130, G181A133, G181A038, G181A129, G181A134, G181A127, G181A166,
+         G181A131, G181A135, G181A137, G181A132,
+         G181A018, G181A019, G181M001, G181Q001, G181R023, G181Q006, G181I001, G181A297)
+
+dim(data)
+```
+
+
+#### Adjust Variables
+```{r}
+# filter: 무응답 -1 제외 / G181P001: 이혼= 3, 사별=4 / G181P036: 부모 사망=7 / G181A020: 8, 9
+data <- filter(data, G181P001 !=3, G181P001 !=4, G181P036!=-1, G181P036 !=7, G181F073 != -1, G181A020 !=8, G181A011 != -1, G181A125 != -1, G181R023 !=-1, G181F073 !=-1)
+
+# 출퇴근 시간 -> 분 변환
+data <- mutate(data, commute  = G181A018 *60 + G181A019)
+
+# 졸업평점 4.3점 변환 -> 등급 나누기  
+data <- mutate(data, grade100 = ifelse(G181F073 == 1, G181F074 * 4.3/4.0, ifelse(G181F074 == 3, G181F074 * 4.3/4.5, G181F074 )))
+
+# grade 변수(졸업평점)   A : 1 , B : 2 , C이하 : 3
+data <- mutate(data, grade = ifelse(grade100 >= 3.7, 1, ifelse(grade100 >= 2.7, 2, 3)))
+
+# 조직 형태
+data <- mutate(data, org_form = ifelse(G181A020==5, 3, ifelse(G181A020 ==6 , 4, ifelse(G181A020 == 7,5, ifelse(G181A020==4, 6, ifelse(G181A020==9, 6, G181A020))))))
+
+# 조직 규모 
+data <-mutate(data, org_size = ifelse(G181A011==c(1, 2, 3, 4, 5), 1, ifelse(G181A011 == 6, 2, ifelse(G181A011== c(7, 8), 3 ,4 ) ) ) ) 
+
+# 조직 규모 
+data <-mutate(data, org_size = ifelse(G181A011==c(1, 2, 3, 4, 5), 1, ifelse(G181A011 == 6, 2, ifelse(G181A011== c(7, 8), 3 ,4)))) 
+
+# inc_rate: 월평균 생활비 지출액 / 월평균초임
+data <- mutate(data, inc_rate = round(G181R023 / G181A125 , 2))
+
+# inc_rate 이상치 제거
+data = data[-which.max(data$inc_rate),]
+data = data[-which.max(data$inc_rate),]
+
+data <- filter(data, inc_rate <350)
+```
+
+
+##### Complete Cases
+```{r}
+data_final<- data[complete.cases(data),]
+dim(data_final)
+
+sum(is.na(data_final))
+```
+
+
+#### EDA
+```{r}
+# 성별
+barplot(table(data_final['G181SEX']))
+
+# 혼인상태 
+barplot(table(data_final['G181P001']))
+
+# 자격증 유무 
+barplot(table(data_final['G181M001']))
+
+# 연령 
+summary((data_final['G181AGE']))
+
+# 전공 
+barplot(table(data_final['G181MAJORCAT']))
+
+# 부모님의 자산규모 
+barplot(table(data_final['G181P036']))
+
+# 일자리 경험 
+barplot(table(data_final['G181H001']))
+
+# 직무 만족도 
+barplot(table(data_final['G181A141']))
+
+# 조직형태: org_form
+barplot(table(data_final['org_form']))
+
+# 조직규모: org_size
+barplot(table(data_final['org_size']))
+
+# 출근시간: commute 
+summary(data_final['commute'])
+boxplot(data_final['commute'])
+
+# 자격증 여부 
+barplot(table(data_final['G181M001']))
+
+# 현재건강상태
+barplot(table(data_final['G181Q001']))
+
+# 생활비 지출액
+summary(data_final['G181R023'])
+
+# Y 이직의도 여부 
+table(data_final['G181A297'])
+
+```
+
+
+#### Data Sampling: data_clean / data_clean_train / data_clean_test
+```{r}
+# data_clean
+library(rsample) 
+data_clean = subset(data_final, select=-c(G181A018,G181A019,G181F073,G181F074,grade100,G181A020,G181A011))
+
+data_clean$G181A297 = ifelse(data_clean$G181A297==2,0,1)
+
+# data_clean_train, data_clean_test
+set.seed(123)
+data_clean_split <- initial_split(data_clean, prop = .7, strata=G181A297)
+data_clean_train <- training(data_clean_split)
+data_clean_test <- testing(data_clean_split)
+```
+
+
+#### New Variables and Y
+```{r}
+# commute 와 이직의도 
+par(mfrow=c(1,2))
+boxplot(data_final$commute[data_final$G181A297==1]) 
+boxplot(data_final$commute[data_final$G181A297==2]) 
+
+
+# 자격증여부와 이직의도
+t1= table(data_final$G181A297,data_final$G181M001) 
+names(dimnames(t1)) =c( 'turn over','license')
+prop.t1 = prop.table(t1,2)
+barplot(prop.t1) 
+
+# 건강상태와 이직의도 
+t2= table(data_final$G181A297,data_final$G181Q001) 
+names(dimnames(t2)) =c( 'turn over','health')
+prop.t2 = prop.table(t2,2)
+barplot(prop.t2) 
+
+
+# inc_rate과 이직의도 
+par(mfrow=c(1,2))
+boxplot(data_final$inc_rate[data_final$G181A297==1], ylim = c(0,1.5)) 
+boxplot(data_final$inc_rate[data_final$G181A297==2], ylim=c(0,1.5)) 
+
+# 어학연수 경험여부와 이직의도
+t4 = table(data_final$G181A297, data_final$G181I001)
+
+names(dimnames(t4)) = c('turn over', 'abroad')
+prop.t4 = prop.table(t4, 2)
+prop.t4
+barplot(t4)
+barplot(prop.t4)
+
+# commute 와 이직의도 
+par(mfrow=c(1,2))
+par(family = "AppleGothic")
+
+# boxplot(commute~G181A297, data =data_clean)
+boxplot(data_clean$commute[data_clean$G181A297==1],ylab='commute time', main='turnover intention:YES') 
+boxplot(data_clean$commute[data_clean$G181A297==0],ylab='commute time', main='turnover intention:NO') 
+
+summary(data_clean$commute[data_clean$G181A297==1])
+summary(data_clean$commute[data_clean$G181A297==0])
+
+# boxplot
+boxplot(commute~G181A297, data=data_clean,
+        ylab= 'commute time',
+        xlab='',
+        xaxt='n'
+) ;axis(1, at=1:2, labels=c('No','YES'))
+
+
+# 건강상태와 이직의도 
+t2= table(data_clean$G181A297,data_clean$G181Q001) 
+names(dimnames(t2)) =c( 'turn over','health')
+prop.t2 = prop.table(t2,2)
+barplot(prop.t2) 
+
+health_table = table(data_clean$G181A297,data_clean$G181Q001)
+health_table_prop = prop.table(health_table,1)
+
+par(mfrow=c(1,2))
+barplot(health_table_prop[2,],main='turnover intention:YES' ) # 1
+barplot(health_table_prop[1,],main='turnover intention:NO') # 0
+
+
+# 현재 건강상태 plot
+as.matrix(health_table_prop)
+round(health_table_prop,2)
+hh=rbind(A=health_table_prop[1,],B=health_table_prop[2,])
+mybar=barplot(hh,beside=T,ylim=c(0,0.8),names=c(1:5),col=c("black","gray"),border="white", main = 'Turnover Intention')
+legend("topright",legend=c("NO","YES"),fill=c("black","gray"),border="white",box.lty=0,cex=1.2)
+
+
+# 어학연수 
+t4 = table(data_clean$G181A297, data_clean$G181I001)
+names(dimnames(t4)) =c('turn over','abroad')
+prop.t4 = prop.table(t4,2)
+barplot(prop.t4) 
+
+english_table = table(data_clean$G181A297,data_clean$G181I001)
+english_table_prop = prop.table(english_table,1)
+
+# 어학연수 plot
+as.matrix(english_table_prop)
+round(english_table_prop,2)
+hh2=rbind(A=english_table_prop[1,],B=english_table_prop[2,])
+mybar=barplot(hh2,beside=T,ylim=c(0,1.5),names=c('language training O', 'language training X' ),col=c("black","gray"),border="white", main = 'Turnover Intention')
+legend("topright",legend=c("NO","YES"),fill=c("black","gray"),border="white",box.lty=0,cex=1.2)
+
+
+# inc_rate와 이직의도 
+summary(data_clean$inc_rate[data_clean$G181A297==1])
+summary(data_clean$inc_rate[data_clean$G181A297==0])
+
+par(mfrow=c(1,2))
+boxplot(data_clean$inc_rate[data_clean$G181A297==1],ylim=c(0,1.05),ylab='inc_rate', main='turnover intention:YES') 
+boxplot(data_clean$inc_rate[data_clean$G181A297==0],ylim=c(0,1.05),ylab='inc_rate', main='turnover intention:NO') 
+```
+
+
+#### Modeling
+## Logistic Regression
+```{r}
+library(MASS)
+library(car)
+library(Epi)
+
+## Full Model
+fit<-glm(G181A297~., data = data_clean_train, family = binomial)
+summary(fit)  #AIC: 7489
+
+
+## Stepwise AIC Model
+# library(MASS)
+fit_aic<-stepAIC(fit)
+summary(fit_aic)  #AIC: 7467.4
+
+##Backward Elimination
+fit_back<-step(fit, direction = "backward", trace = FALSE)
+summary(fit_back) #AIC: 7467.4
+
+## Check Multicollinearity
+# library(car)
+vif(fit_aic) #No multicollinearity found
+
+## Final Model
+fit_aic<-stepAIC(fit)
+summary(fit_aic)  #AIC: 7467.4
+
+## Calculate ROC Curve
+aic_test <- predict(fit_aic, data_clean_test)
+ROC(test = aic_test, stat = data_clean_test$G181A297, 
+    plot="ROC", AUC=T, main="AIC Model ROC Curve") #AUC: 0.7770
+
+## Confusion Matrix
+testpred<-predict.glm(fit_aic, newdata = data_clean_test, type = "response")
+
+testpred<-ifelse(test = testpred>0.5, yes = 1, no=0)
+
+table(data_clean_test$G181A297, testpred, dnn = c("Predicted", "Observed")) 
+(2408+231)/(2408+131+609+231)*100  #accuracy=77.64%
+
+```
+
+## GBM
+```{r}
+library(rsample)      # data splitting 
+library(gbm)          # basic implementation
+library(xgboost)      # a faster implementation of gbm
+library(caret)        # an aggregator package for performing many machine learning models
+library(h2o)          # a java-based platform
+library(pdp)          # model visualization
+library(ggplot2)      # model visualization
+library(lime)         # model visualization
+
+## <Tuning>
+set.seed(123)
+
+# train GBM model
+gbm.fit2 <- gbm(
+  formula = G181A297~ .,
+  distribution = "bernoulli",
+  data = data_clean_train,
+  n.trees = 5000,
+  interaction.depth = 3,
+  shrinkage = 0.1, #  learning rate 
+  cv.folds = 5, # cross-validation 
+  n.cores = NULL, # will use all cores by default
+  verbose = FALSE
+  )  
+
+# find index for n trees with minimum CV error
+min_MSE <- which.min(gbm.fit2$cv.error)
+
+# get MSE and compute RMSE
+sqrt(gbm.fit2$cv.error[min_MSE])
+
+# plot loss function as a result of n trees added to the ensemble
+gbm.perf(gbm.fit2, method = "cv") 
+# extracts the optimal number of iterations using cross-validation
+
+# create hyperparameter grid
+hyper_grid <- expand.grid(
+  shrinkage = c(.01, .1, .3),
+  interaction.depth = c(1, 3, 5),
+  n.minobsinnode = c(5, 10, 15),
+  bag.fraction = c(.65, .8, 1), 
+  optimal_trees = 0,               # a place to dump results
+  min_RMSE = 0                     # a place to dump results
+)
+
+
+# randomize data
+random_index <- sample(1:nrow(data_clean_train), nrow(data_clean_train))
+random_data_clean_train <- data_clean_train[random_index, ]
+
+# grid search 
+for(i in 1:nrow(hyper_grid)) {
+  
+  # reproducibility
+  set.seed(123)
+  
+  # train model
+  gbm.tune <- gbm(
+    formula =  G181A297~ .,
+    data = random_data_clean_train,
+    n.trees = 5000,
+    interaction.depth =  hyper_grid$interaction.depth[i],
+    shrinkage = hyper_grid$shrinkage[i],
+    n.minobsinnode = hyper_grid$n.minobsinnode[i],
+    bag.fraction = hyper_grid$bag.fraction[i],
+    train.fraction = .75,
+    n.cores = NULL, # will use all cores by default
+    verbose = FALSE
+  )
+  
+  # add min training error and trees to grid
+  hyper_grid$optimal_trees[i] <- which.min(gbm.tune$valid.error)
+  hyper_grid$min_RMSE[i] <- sqrt(min(gbm.tune$valid.error))
+}
+
+hyper_grid %>% 
+  dplyr::arrange(min_RMSE) %>%
+  head(50)
+
+
+## <Tuning again>
+# modify hyperparameter grid
+hyper_grid <- expand.grid(
+  shrinkage = c(.1, .01, .05),
+  interaction.depth = c(3, 4, 5),
+  n.minobsinnode = c(5, 10, 15),
+  bag.fraction = c(0.65, .7, 0.8), 
+  optimal_trees = 0,               # a place to dump results
+  min_RMSE = 0                     # a place to dump results
+)
+
+# grid search 
+for(i in 1:nrow(hyper_grid)) {
+  
+  # reproducibility
+  set.seed(123)
+  
+  # train model
+  gbm.tune <- gbm(
+    formula = G181A297 ~ .,
+    distribution = "bernoulli",
+    data = random_data_clean_train,
+    n.trees = 2000,
+    interaction.depth = hyper_grid$interaction.depth[i],
+    shrinkage = hyper_grid$shrinkage[i],
+    n.minobsinnode = hyper_grid$n.minobsinnode[i],
+    bag.fraction = hyper_grid$bag.fraction[i],
+    train.fraction = .75,
+    n.cores = NULL, # will use all cores by default
+    verbose = FALSE
+  )
+  
+  # add min training error and trees to grid
+  hyper_grid$optimal_trees[i] <- which.min(gbm.tune$valid.error)
+  hyper_grid$min_RMSE[i] <- sqrt(min(gbm.tune$valid.error))
+}
+
+hyper_grid %>% 
+  dplyr::arrange(min_RMSE) %>%
+  head(10)
+
+# we train a model with those specific parameters. 
+
+# for reproducibility
+set.seed(123)
+
+# train GBM model
+gbm.fit.final <- gbm(
+  formula = G181A297 ~ .,
+  data = data_clean_train,
+  n.trees = 1385,
+  interaction.depth = 3,
+  shrinkage = 0.01,
+  n.minobsinnode = 10,
+  bag.fraction = .8, 
+  train.fraction = 1,
+  n.cores = NULL, # will use all cores by default
+  verbose = FALSE
+  )  
+
+## <Visualizing>
+
+par(mar = c(5, 8, 1, 1))
+summary(
+  gbm.fit.final, 
+  cBars = 10, # to adjust the number of variables to show
+  method = relative.influence, # also can use permutation.test.gbm
+  las = 2
+  )
+
+library(pdp)
+
+gbm.fit.final %>%
+  partial(pred.var = "G181A140", n.trees = gbm.fit.final$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = ames_train) 
+
+
+
+# predict values for test data
+pred <- predict(gbm.fit.final, n.trees = gbm.fit.final$n.trees, data_clean_test,type='response')
+
+
+new = ifelse(pred>0.5,1,0)
+
+cm = table(data_clean_test$G181A297, new)
+cm
+(cm[1,1]+cm[2,2])/length(new)
+
+# Calculate ROC curve
+rocCurve.tree <- roc(data_clean_test$G181A297,pred)
+
+# plot the ROC curve
+plot(rocCurve.tree)
+auc(rocCurve.tree)
+
+```
+
+
+## Random Forest
+```{r}
+library(randomForest)
+library(caret)
+
+set.seed(123)
+
+# as.factor
+data_clean_train$G181A297 <- as.factor(data_clean_train$G181A297)
+data_clean_test$G181A297 <- as.factor(data_clean_test$G181A297)
+
+## 1: Modeling without Tuning
+# default model with ntree = 500
+rf1 = randomForest(G181A297 ~., data = data_clean_train, importance = TRUE)
+
+rf1 #OOB: 21.77%
+
+# number of trees: 500
+rf1$ntree
+
+# number of mtry: 6
+rf1$mtry 
+
+# model with ntree = 1000
+rf1 = randomForest(G181A297 ~., data = data_clean_train, importance = TRUE,
+                   ntree = 1000)
+
+rf1 #OOB: 21.45%
+
+# number of trees: 1000
+rf1$ntree
+
+# number of mtry: 6
+rf1$mtry 
+
+
+# Plot : creating error rate df for all the trees
+oob.err.data <- data.frame(
+  Trees = rep(1:nrow(rf1$err.rate), 3), 
+  Type = rep(c("OOB","0","1"), each = nrow(rf1$err.rate)),
+  Error = c(rf1$err.rate[,"OOB"], rf1$err.rate[,"0"], rf1$err.rate[,"1"]))
+
+ggplot(data = oob.err.data, aes(x = Trees, y= Error)) + geom_line(aes(color = Type))
+
+
+## 2. Predict
+rf1.predict <- predict(rf1, newdata = data_clean_test, type = 'class')
+
+
+## 3. 평가
+# confusionMatrix
+confusionMatrix(rf1.predict, data_clean_test$G181A297) #accuracy: 0.7858
+
+## 4. Hyperparameter Tuning
+# Store X and Y
+# feature
+features <- setdiff(names(data_clean_train), "G181A297")
+
+
+# ntree = 1000, mtry = 6
+m1 <- tuneRF(
+  x          = data_clean_train[features],
+  y          = data_clean_train$G181A297,
+  ntreeTry   = 1000,
+  mtryStart  = 6,
+  stepFactor = 1.5,
+  improve    = 0.01,
+  trace      = FALSE      # to not show real-time progress 
+)
+
+
+m1
+plot(m1, type = "b")
+
+
+## 5. Final Model
+# Modeling
+final = randomForest(G181A297 ~., data = data_clean_train, importance = TRUE, 
+                     ntree = 1000, mtry = 4)
+
+final #OOB: 21.12%
+                   
+# Predict
+final.predict <- predict(final, newdata = data_clean_test, type = 'class')
+
+
+# 평가
+confusionMatrix(final.predict, data_clean_test$G181A297) #0.7882
+
+
+## 6. Variance Importance Plot: varImpPlot()
+varImpPlot(final)
+
+## 7. ROC Curve
+library(pROC)
+
+pred_test <- predict(final, data_clean_test, type="prob")
+head(pred_test)
+
+pred_test <- data.frame(pred_test)
+
+
+pred_test_roc <- roc(data_clean_test$G181A297, pred_test$X1)
+auc(pred_test_roc)
+
+plot(pred_test_roc)
+
+```
+
+
+#### Partial Dependence Plot (PDP): partialPlot
+```{r}
+#MeanDecreaseAccuracy
+partialPlot(final, as.data.frame(data_clean_train), G181A140)
+partialPlot(final, as.data.frame(data_clean_train), G181A127)
+partialPlot(final, as.data.frame(data_clean_train), G181A131)
+partialPlot(final, as.data.frame(data_clean_train), G181A142)
+partialPlot(final, as.data.frame(data_clean_train), G181A126)
+
+#MeanDecreaseGini
+partialPlot(final, as.data.frame(data_clean_train), G181A125)
+partialPlot(final, as.data.frame(data_clean_train), inc_rate)
+partialPlot(final, as.data.frame(data_clean_train), G181AGE)
+partialPlot(final, as.data.frame(data_clean_train), commute)
+
+```
+
